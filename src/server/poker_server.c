@@ -47,7 +47,7 @@ int main(int argc, char **argv) {
             exit(EXIT_FAILURE);
         }
     }
-    printf("[Server] Listening on ports %d-%d. Waiting for JOIN...\n", BASE_PORT, BASE_PORT + NUM_PORTS - 1);
+    printf("[Server] Listening on ports 2201 to 2206. Waiting for JOIN\n");
 
     while(player_count < MAX_PLAYERS){
         fd_set readset;
@@ -75,7 +75,7 @@ int main(int argc, char **argv) {
             }
         }
     }
-    printf("[Server] All 6 players joined. Entering main loop.\n");
+    printf("[Server] All 6 players joined.\n");
 
     while(1){
         reset_game_state(&game);
@@ -161,6 +161,14 @@ int main(int argc, char **argv) {
                 build_end_packet(&game, winner, &endPkt);
                 send(game.sockets[p], &endPkt, sizeof(endPkt), 0);
             }
+        }
+
+        if(game.round_stage != ROUND_INIT){
+            int newDealer = (game.dealer_player + 1) % MAX_PLAYERS;
+            while(game.player_status[newDealer] == PLAYER_LEFT){
+                newDealer = (newDealer + 1) % MAX_PLAYERS;
+            }
+            game.dealer_player = newDealer;
         }
     }
 

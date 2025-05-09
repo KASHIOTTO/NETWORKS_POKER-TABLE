@@ -18,10 +18,10 @@ static void save_state(game_state_t *game, info_packet_t *pack) {
                 pack->player_status[i] = 1; 
                 break;
             case PLAYER_FOLDED:  
-                pack->player_status[i]=0; 
+                pack->player_status[i] = 0; 
                 break;
             default:             
-                pack->player_status[i]=2; 
+                pack->player_status[i] = 2; 
                 break;
         }
     }
@@ -59,13 +59,13 @@ int handle_client_action(game_state_t *game, player_id_t pid, const client_packe
                 game->pot_size += callAmt;
             }
             break;
-        case RAISE:{
+        case RAISE:
             int newAmt = in->params[0];
             if(newAmt <= game->highest_bet || newAmt <= game->current_bets[pid]){
                 return -1;
             }
-            int diff=newAmt-game->current_bets[pid];
-            if(game->player_stacks[pid]<diff){
+            int diff = newAmt-game->current_bets[pid];
+            if(game->player_stacks[pid] < diff){
                 return -1;
             }
             game->player_stacks[pid] -= diff;
@@ -78,7 +78,6 @@ int handle_client_action(game_state_t *game, player_id_t pid, const client_packe
                 }
             }
             break;
-        }
         case FOLD:
             game->player_status[pid] = PLAYER_FOLDED;
             break;
@@ -89,12 +88,11 @@ int handle_client_action(game_state_t *game, player_id_t pid, const client_packe
         game->current_bets[pid] = game->highest_bet;
     }
 
-    int nxt = (game->current_player+1) % MAX_PLAYERS;
-    while(nxt != game->current_player && game->player_status[nxt] != PLAYER_ACTIVE){
-	nxt = (nxt + 1) % MAX_PLAYERS;
-	if(nxt == game->current_player){break;}
+    int nxt = (game->current_player + 1) % MAX_PLAYERS;
+    while(nxt != pid && game->player_status[nxt] != PLAYER_ACTIVE){
+	    nxt = (nxt + 1) % MAX_PLAYERS;
 	}
-    	game->current_player=nxt;
+    game->current_player = nxt;
 
     out->packet_type = ACK;
     for(int p = 0; p < MAX_PLAYERS; p++){
