@@ -80,6 +80,7 @@ int main(int argc, char **argv) {
     while(1){
         reset_game_state(&game);
 
+        //handle ready leave
         int readyCount = 0;
         for(int i = 0; i < MAX_PLAYERS; i++){
             if(game.player_status[i] != PLAYER_LEFT){
@@ -109,7 +110,20 @@ int main(int argc, char **argv) {
             break;
         }
 
-        server_deal(&game);
+        //
+        for(int i = 0; i < MAX_PLAYERS; i++){
+            if(game.player_status[i] == PLAYER_ACTIVE){
+                game.player_hands[i][0] = game.deck[game.next_card++];
+                game.player_hands[i][1] = game.deck[game.next_card++];
+            }
+        }
+
+        int first = (game.dealer_player + 1) % MAX_PLAYERS;
+        while(game.player_status[first] != PLAYER_ACTIVE){
+            first = (first + 1) % MAX_PLAYERS;
+        }
+        game.current_player = first;
+
         for(int p = 0; p < MAX_PLAYERS; p++){
             if(game.player_status[p] != PLAYER_LEFT){
                 server_packet_t infoPkt;
@@ -120,8 +134,37 @@ int main(int argc, char **argv) {
 
         while(1){
             if(check_betting_end(&game)){
-                if(game.round_stage == ROUND_RIVER) break;
-                server_community(&game);
+                if(game.round_stage == ROUND_RIVER){
+                    break;
+                }
+                if(game.round_stage == ROUND_PREFLOP){
+                    for(int i = 0; i < 3; i ++){
+                        game.community_cards[i] = game.deck[game.next_card++];
+                    }
+                    game.round_stage = ROUND_FLOP;
+                }
+                else if(game.round_stage == ROUND_FLOP){
+                    game.community_cards[3] = game.deck[game.next_card++];
+                    game.round_stage = ROUND_TURN;
+                }
+                else if(game.round_stage == ROUND_TURN){
+                    game.community_cards[4] = game.deck[game.next_card++];
+                    game.round_stage = ROUND_RIVER;
+                }
+
+                for(int i = 0; i < MAX_PLAYERS; i++){
+                    if(game.player_status[i] == PLAYER_ACTIVE){
+                        game.current_bets[i] = 0;
+                    }
+                }
+                game.highest_bet = 0;
+                
+                int p = (game.dealer_player + 1) % MAX_PLAYERS;
+                while(game.player_status[p] != PLAYER_ACTIVE){
+                    p = (p + 1) % MAX_PLAYERS;
+                }
+                game.current_player = p;
+
                 for(int p = 0; p < MAX_PLAYERS; p++){
                     if(game.player_status[p] != PLAYER_LEFT){
                         server_packet_t infoPkt;
@@ -141,6 +184,14 @@ int main(int argc, char **argv) {
                     nxt = (nxt + 1) % MAX_PLAYERS;
                 }
                 game.current_player = nxt;
+
+                for(int p = 0; p < MAX_PLAYERS; p++){
+                    if(game.player_status[p] != PLAYER_LEFT){
+                        server_packet_t infoPkt;
+                        build_info_packet(&game, p, &infoPkt);
+                        send(game.sockets[p], &infoPkt, sizeof(infoPkt), 0);
+                    }
+                }
                 continue;
             }
             server_packet_t reply;
@@ -154,7 +205,9 @@ int main(int argc, char **argv) {
         }
 
         int winner = find_winner(&game);
-        server_end(&game);
+        game.player_stacks[winner] += game.pot_size;
+        game.pot_size = 0;
+
         for(int p = 0; p < MAX_PLAYERS; p++){
             if(game.player_status[p] != PLAYER_LEFT){
                 server_packet_t endPkt;

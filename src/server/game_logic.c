@@ -281,7 +281,7 @@ int check_betting_end(game_state_t *game) {
 		active++;
 	    }
     }
-    return (active <= 1) || (allSame && activeBet == game->highest_bet);
+    return (active <= 1) || (allSame && (activeBet == game->highest_bet || activeBet == -1));
 }
 
 void server_community(game_state_t *game) {

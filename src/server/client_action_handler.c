@@ -59,7 +59,7 @@ int handle_client_action(game_state_t *game, player_id_t pid, const client_packe
                 game->pot_size += callAmt;
             }
             break;
-        case RAISE: {
+        case RAISE:{
             int newAmt = in->params[0];
             if(newAmt <= game->highest_bet || newAmt <= game->current_bets[pid]){
                 return -1;
@@ -89,7 +89,7 @@ int handle_client_action(game_state_t *game, player_id_t pid, const client_packe
         game->current_bets[pid] = game->highest_bet;
     }
 
-    int nxt = (game->current_player + 1) % MAX_PLAYERS;
+    int nxt = (pid + 1) % MAX_PLAYERS;
     while(nxt != pid && game->player_status[nxt] != PLAYER_ACTIVE){
 	    nxt = (nxt + 1) % MAX_PLAYERS;
 	}
