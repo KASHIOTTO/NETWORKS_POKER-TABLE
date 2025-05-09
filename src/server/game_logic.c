@@ -1,3 +1,4 @@
+// game_logic.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -15,353 +16,342 @@ static inline uint64_t bit(int rank){
 }
 
 static uint64_t value_of_hand(const card_t cards[7]){
-    int rankOccurrence[13] = {0};
+    int rankCnt[13] = {0};
     uint16_t suitRanks[4] = {0};
-    for(int i = 0; i < 7; ++i){
+    for(int i = 0; i < 7; i++){
+	    if(cards[i] == NOCARD){
+		    continue;
+	    }
         int r = RANK(cards[i]);
         int s = SUITE(cards[i]);
-        rankOccurrence[r]++;
+        rankCnt[r]++;
         suitRanks[s] |= 1 << r;
     }
-
+    
     int flushSuit = -1;
-    for(int s = 0; s < 4; ++s){
+    for(int s = 0; s < 4; s++){
         if(__builtin_popcount(suitRanks[s]) >= 5){
             flushSuit = s;
             break;
         }
     }
-
+    
     int straightHi = -1, sfHi = -1;
     uint16_t ranksMask = 0;
-    for(int r = 0; r < 13; ++r){
-        if(rankOccurrence[r]){
+    for(int r = 0; r < 13; r++){
+        if(rankCnt[r]){
             ranksMask |= 1 << r;
         }
     }
-
     if(ranksMask & bit(12)){
         ranksMask |= 1;
     }
-
-    for(int hi = 12; hi >= 4; --hi){
-        if((ranksMask >> (hi - 4)) & 0x1F){
-            straightHi = hi;
-            break;
+    for(int hi = 12; hi >= 4; hi--){
+	uint16_t straightMask = 0x1F << (hi - 4);
+        if((ranksMask & straightMask) == straightMask){
+            straightHi = hi; break;
         }
     }
-
     if(flushSuit != -1){
         uint16_t fm = suitRanks[flushSuit];
         if(fm & bit(12)){
             fm |= 1;
         }
-        for(int hi = 12; hi >= 4; --hi){
-            if((fm >> (hi - 4)) & 0x1F){
+        for(int hi = 12; hi >= 4; hi--){
+	        uint16_t straightMask = 0x1F << (hi - 4);
+            if((fm & straightMask) == straightMask){
                 sfHi = hi;
                 break;
             }
         }
     }
-
-    enum{
-        HICARD = 1,
-        PAIR,
-        TWOPAIR,
-        TRIPS,
-        STRAIGHT,
-        FLUSH,
-        FULL,
-        QUADS,
-        STRFLUSH
+    
+    enum { 
+        HICARD = 1, 
+        ONE_PAIR, 
+        TWO_PAIR, 
+        THREE_OF_A_KIND, 
+        STRAIGHT, 
+        FLUSH, 
+        FULL_HOUSE, 
+        FOUR_OF_A_KIND, 
+        STR_FLUSH 
     };
+    
     uint64_t best = 0;
-
+    
     if(sfHi != -1){
-        best = ((uint64_t)STRFLUSH << 60) | sfHi;
-        return best;
+        return ((uint64_t)STR_FLUSH << 60) | sfHi;
     }
 
-    int quad = -1, trips[3] = {-1, -1, -1}, tCount = 0, pairs[3] = {-1, -1, -1}, pCount = 0;
-    for(int r = 12; r >= 0; --r){
-        if(rankOccurrence[r] == 4){
-            quad = r;
+    int quad = -1, trips[3] = {-1,-1,-1}, tCnt = 0, pairs[3] = {-1,-1,-1}, pCnt = 0;
+    for(int r = 12; r >= 0; r--){
+        if(rankCnt[r] == 4){
+            quad=r;
         }
-        else if(rankOccurrence[r] == 3){
-            trips[tCount++] = r;
+        else if(rankCnt[r] == 3){
+            trips[tCnt++] = r;
         }
-        else if(rankOccurrence[r] == 2){
-            pairs[pCount++] = r;
+        else if(rankCnt[r] == 2){
+            pairs[pCnt++] = r;
         }
     }
     if(quad != -1){
-        int fifthHi = -1;
-        for(int r = 12; r >= 0; --r){
-            if(r != quad && rankOccurrence[r]){
-                fifthHi = r;
+        int hiCard5 = -1;
+        for(int r = 12; r >= 0; r--){
+            if(r != quad && rankCnt[r]){
+                hiCard5 = r;
                 break;
             }
         }
-        best = ((uint64_t)QUADS << 60) | (quad << 4) | fifthHi;
-        return best;
+        return ((uint64_t)FOUR_OF_A_KIND << 60) | (quad<<4) | hiCard5;
     }
     if(trips[0] != -1 && (pairs[0] != -1 || trips[1] != -1)){
-        int three = trips[0];
-        int two = (trips[1] != -1) ? trips[1] : pairs[0];
-        best = ((uint64_t)FULL << 60) | (three << 4) | two;
-        return best;
+        int three = trips[0], two = ((trips[1] != -1) ? trips[1] : pairs[0]);
+        return ((uint64_t)FULL_HOUSE << 60) | (three << 4) | two;
     }
-
     if(flushSuit != -1){
         uint16_t fm = suitRanks[flushSuit];
-        uint64_t val = 0;
-        int filled = 0;
-        for(int r = 12; r >= 0 && filled < 5; --r){
+        uint64_t val = 0; int cnt = 0;
+        for(int r = 12; r >= 0 && cnt<5; r--){
             if(fm & bit(r)){
                 val = (val << 4) | r;
-                ++filled;
+                cnt++;
             }
         }
-        best = ((uint64_t)FLUSH << 60) | val;
-        return best;
+        return ((uint64_t)FLUSH << 60) | val;
     }
     if(straightHi != -1){
-        best = ((uint64_t)STRAIGHT << 60) | straightHi;
-        return best;
+        return ((uint64_t)STRAIGHT << 60) | straightHi;
     }
     if(trips[0] != -1){
-        int fifthHi1 = -1, fifthHi2 = -1;
-        for(int r = 12; r >= 0; ++r){
-            if(r != trips[0] && rankOccurrence[r]){
-                if(fifthHi1 == -1){
-                    fifthHi1 = r;
+        int k1 = -1,k2 = -1;
+        for(int r = 12; r >= 0; r--){
+            if(r != trips[0] && rankCnt[r]){
+                if(k1 == -1){
+                    k1 = r;
                 }
                 else{
-                    fifthHi2 = r;
+                    k2 = r;
                     break;
                 }
             }
         }
-        best = ((uint64_t)TRIPS << 60) | (trips[0] << 8) | (fifthHi1 << 4) | fifthHi2;
-        return best;
+        return ((uint64_t)THREE_OF_A_KIND << 60) | (trips[0] << 8) | (k1 << 4) | k2;
     }
-    if(pCount >= 2){
-        int hi = pairs[0], lo = pairs[1], fifthHi = -1;
-        for(int r = 12; r >=0; --r){
-            if(rankOccurrence[r] && r != hi && r != lo){
-                fifthHi = r;
+    if(pCnt >= 2){
+        int hi = pairs[0], lo = pairs[1], k = -1;
+        for(int r = 12; r >= 0; r--){
+            if(rankCnt[r] && r != hi && r != lo){
+                k = r;
                 break;
             }
         }
-        best = ((uint64_t)TWOPAIR << 60) | (hi << 8) | (lo << 4) | fifthHi;
-        return best;
+        return ((uint64_t)TWO_PAIR << 60) | (hi << 8) | (lo << 4) | k;
     }
-    if(pCount == 1){
-        int fifthHi1 = -1, fifthHi2 = -1, fifthHi3 = -1;
-        for(int r = 12; r >= 0; --r){
-            if(rankOccurrence[r] && r != pairs[0]){
-                if(fifthHi1 == -1){
-                    fifthHi1 = r;
+    if(pCnt == 1){
+        int k1 = -1, k2 = -1, k3 = -1;
+        for(int r = 12; r >= 0; r--){
+            if(rankCnt[r] && r != pairs[0]){
+                if(k1 == -1){
+                    k1 = r;
                 }
-                else if(fifthHi2 == -1){
-                    fifthHi2 = r;
+                else if(k2 == -1){
+                    k2 = r;
                 }
                 else{
-                    fifthHi3 = r;
+                    k3 = r;
                     break;
                 }
             }
         }
-        best = ((uint64_t)PAIR << 60) | (pairs[0] << 12) | (fifthHi1 << 8) | (fifthHi2 << 4) | fifthHi3;
-        return best;
+        return ((uint64_t)ONE_PAIR << 60) | (pairs[0] << 12) | (k1 << 8) |(k2 << 4) | k3;
     }
     {
-        uint64_t val = 0;
-        int filled = 0;
-        for(int r = 12; r >= 0 && filled < 5; --r){
-            if(rankOccurrence[r]){
+        uint64_t val = 0; int cnt = 0;
+        for(int r = 12; r >= 0 && cnt < 5; r--){
+            if(rankCnt[r]){
                 val = (val << 4) | r;
-                ++filled;
+                cnt++;
             }
         }
-        best = ((uint64_t)HICARD << 60) | val;
+        return ((uint64_t)HICARD << 60) | val;
     }
-    return best;
 }
 
-void print_game_state( game_state_t *game){
-    (void) game;
+void print_game_state(game_state_t *game) {
+    (void)game;
 }
 
-void init_deck(card_t deck[DECK_SIZE], int seed){
+void init_deck(card_t deck[DECK_SIZE], int seed) {
     srand(seed);
     int i = 0;
-    for(int r = 0; r<13; r++){
-        for(int s = 0; s<4; s++){
+    for(int r = 0; r < 13; r++){
+        for(int s = 0; s < 4; s++){
             deck[i++] = (r << SUITE_BITS) | s;
         }
     }
 }
 
-void shuffle_deck(card_t deck[DECK_SIZE]){
-    for(int i = 0; i<DECK_SIZE; i++){
+void shuffle_deck(card_t deck[DECK_SIZE]) {
+    for(int i=0; i < DECK_SIZE; i++){
         int j = rand() % DECK_SIZE;
-        card_t temp = deck[i];
-        deck[i] = deck[j];
-        deck[j] = temp;
+        card_t t = deck[i]; deck[i] = deck[j]; deck[j] = t;
     }
 }
 
-void init_game_state(game_state_t *game, int starting_stack, int random_seed){
-    memset(game, 0, sizeof(game_state_t));
-    init_deck(game->deck, random_seed);
-    for (int i = 0; i < MAX_PLAYERS; i++) {
+void init_game_state(game_state_t *game, int starting_stack, int random_seed) {
+    memset(game,0,sizeof(*game));
+    init_deck(game->deck,random_seed);
+    for(int i = 0; i < MAX_PLAYERS; i++){
         game->player_stacks[i] = starting_stack;
     }
-
-    game->dealer_player = 0;
-    game->current_player = 1;
-    game->round_stage = ROUND_INIT;
+    game->dealer_player=0;
+    game->current_player=1;
+    game->round_stage=ROUND_INIT;
 }
 
 void reset_game_state(game_state_t *game) {
     shuffle_deck(game->deck);
+
     game->next_card = 0;
     memset(game->community_cards, NOCARD, sizeof(game->community_cards));
     memset(game->player_hands, NOCARD, sizeof(game->player_hands));
-    memset(game->current_bets, 0, sizeof(game->current_bets));
+    for(int i = 0; i < MAX_PLAYERS; i++){
+        game->current_bets[i] = 0;
+    }
     game->highest_bet = 0;
     game->pot_size = 0;
-
     if(game->round_stage != ROUND_INIT){
-        int next_dealer = (game->dealer_player + 1) % MAX_PLAYERS;
-        while(game->player_status[next_dealer] == PLAYER_LEFT){
-            next_dealer = (next_dealer + 1) % MAX_PLAYERS;
+        int nd = (game->dealer_player + 1) % MAX_PLAYERS;
+        while(game->player_status[nd] == PLAYER_LEFT){
+            nd=(nd + 1) % MAX_PLAYERS;
         }
-        game->dealer_player = next_dealer;
+        game->dealer_player = nd;
     }
-
     game->current_player = -1;
     game->round_stage = ROUND_PREFLOP;
 }
 
-void server_join(game_state_t *game) {
-    (void) game;
-}
-
 int server_ready(game_state_t *game) {
-    int ready = 0;
+    int cnt = 0;
     for(int i = 0; i < MAX_PLAYERS; i++){
         if(game->player_status[i] == PLAYER_ACTIVE){
-            ++ready;
+            cnt++;
         }
     }
-    return ready;
+    return cnt;
 }
 
 void server_deal(game_state_t *game) {
-    int first = (game->dealer_player + 1) % MAX_PLAYERS;
-    while(game->player_status[first] != PLAYER_ACTIVE){
-        first = (first + 1) % MAX_PLAYERS;
-    }
-    game->current_player = first;
-
-    for(int i = 0; i < MAX_PLAYERS; ++i){
-        if(game->player_status[i] == PLAYER_ACTIVE){
-            game->current_bets[i] = -1;
-        }
-    }
-    for(int i = game->dealer_player, dealt = 0; dealt < MAX_PLAYERS; i = (i + 1) % MAX_PLAYERS, ++dealt){
-        if (game->player_status[i] != PLAYER_ACTIVE) {
-            continue;
-        }
-        game->player_hands[i][0] = game->deck[game->next_card++];
-        game->player_hands[i][1] = game->deck[game->next_card++];
+    for(int i = 0; i < MAX_PLAYERS; i++){
+	game->current_bets[i] = 0;	
     }
     game->highest_bet = 0;
-}
-
-int server_bet(game_state_t *game) {
-    (void) game;
-    return 0;
-}
-
-int check_betting_end(game_state_t *game){
-    int activeCount = 0;
-    int match = 1;
-    for(int i = 0; i < MAX_PLAYERS; ++i){
-        if(game->player_status[i] != PLAYER_ACTIVE && game->player_status[i] != PLAYER_ALLIN){
-            continue;
-        }
-        ++activeCount;
-        if(game->player_status[i] == PLAYER_ACTIVE && game->current_bets[i] == -1){
-            match = 0;
-        }
-        if(game->player_status[i] == PLAYER_ACTIVE && game->current_bets[i] != game->highest_bet){
-            match = 0;
+	
+    int first=(game->dealer_player + 1) % MAX_PLAYERS;
+    while(game->player_status[first] != PLAYER_ACTIVE){ 
+	    first=(first + 1) % MAX_PLAYERS;
+    	if(first == game->dealer_player){
+            break;
         }
     }
-    return match;
+    game->current_player = first;
+    for(int i = 0; i < MAX_PLAYERS; i++){
+        if(game->player_status[i] == PLAYER_ACTIVE){
+            game->player_hands[i][0] = game->deck[game->next_card++];
+            game->player_hands[i][1] = game->deck[game->next_card++];
+        }
+    }
+}
+
+int check_betting_end(game_state_t *game) {
+    int active = 0, allSame = 1, activeBet = -1;
+    for(int i = 0; i < MAX_PLAYERS; i++){
+        if(game->player_status[i] == PLAYER_ACTIVE){
+            active++;
+            if(activeBet == -1){
+                activeBet = game->current_bets[i];
+            }
+            else if(game->current_bets[i] != activeBet){
+                allSame = 0;
+            }
+        }
+        else if(game->player_status[i] == PLAYER_ALLIN){
+		active++;
+	    }
+    }
+    return (active <= 1) || (allSame && activeBet == game->highest_bet);
 }
 
 void server_community(game_state_t *game) {
     if(game->round_stage == ROUND_PREFLOP){
-        for(int i = 0; i < 3; ++i){
+        for(int i = 0; i < 3; i++){
             game->community_cards[i] = game->deck[game->next_card++];
         }
         game->round_stage = ROUND_FLOP;
-    }
+    } 
     else if(game->round_stage == ROUND_FLOP){
         game->community_cards[3] = game->deck[game->next_card++];
         game->round_stage = ROUND_TURN;
-    }
+    } 
     else if(game->round_stage == ROUND_TURN){
         game->community_cards[4] = game->deck[game->next_card++];
         game->round_stage = ROUND_RIVER;
     }
-
-    for(int i = 0; i < MAX_PLAYERS; ++i){
-        game->current_bets[i] = (game->player_status[i] == PLAYER_ACTIVE) ? -1 : 0;
+    for(int i = 0; i < MAX_PLAYERS; i++){
+        if(game->player_status[i] == PLAYER_ACTIVE){
+            game->current_bets[i]=0;
+        }
     }
     game->highest_bet = 0;
-
     int p = (game->dealer_player + 1) % MAX_PLAYERS;
     while(game->player_status[p] != PLAYER_ACTIVE){
-        p = (p + 1) % MAX_PLAYERS;
+        p=(p + 1) % MAX_PLAYERS;
     }
-    game->current_player = p;
+    game->current_player=p;
 }
 
 void server_end(game_state_t *game) {
     int won = find_winner(game);
-    game->player_stacks[won] += game->pot_size;
+
+    if(won >= 0 && won < MAX_PLAYERS){
+	    game->player_stacks[won] += game->pot_size;
+	    game->pot_size = 0;
+    }
 }
 
 int evaluate_hand(game_state_t *game, player_id_t pid) {
-    card_t cards[7] = {
-        game->player_hands[pid][0],
-        game->player_hands[pid][1],
-        game->community_cards[0],
-        game->community_cards[1],
-        game->community_cards[2],
-        game->community_cards[3],
-        game->community_cards[4]
-    };
-    return (int)value_of_hand(cards);
+    card_t c[7]= {game->player_hands[pid][0],
+                  game->player_hands[pid][1],
+                  game->community_cards[0],
+                  game->community_cards[1],
+                  game->community_cards[2],
+                  game->community_cards[3],
+                  game->community_cards[4] 
+                };
+    return (int)value_of_hand(c);
 }
 
 int find_winner(game_state_t *game) {
-    uint64_t bestHand = 0;
-    int bestSeat = -1;
-    for(int i = 0; i < MAX_PLAYERS; ++i){
-        if(game->player_status[i] == PLAYER_FOLDED || game->player_status[i] == PLAYER_LEFT){
-            continue;
-        }
-        uint64_t value = (uint64_t)evaluate_hand(game, i);
-        if(value > bestHand){
-            bestHand = value;
-            bestSeat = i;
+    uint64_t bestHand = 0; int bestPlyr = -1;
+    for(int i = 0; i < MAX_PLAYERS; i++){
+        if(game->player_status[i] == PLAYER_ACTIVE || game->player_status[i] == PLAYER_ALLIN){
+            card_t hand[7] = {game->player_hands[i][0],
+		                    game->player_hands[i][1],
+		                    game->community_cards[0],
+		                    game->community_cards[1],
+		                    game->community_cards[2],
+		                    game->community_cards[3],
+		                    game->community_cards[4]
+	                        };
+		
+	        uint64_t v = value_of_hand(hand);
+	        if(v > bestHand){
+		        bestHand = v;
+		        bestPlyr = i;
+	        }
         }
     }
-    return bestSeat;
+    return bestPlyr;
 }
