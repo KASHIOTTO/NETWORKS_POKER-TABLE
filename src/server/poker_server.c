@@ -1,6 +1,3 @@
-/********************************************************************
- *  Simple select-loop based poker server (6 seats, one port each)
- *******************************************************************/
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,207 +5,196 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/select.h>
+#include <sys/time.h>
 
 #include "poker_client.h"
-#include "game_logic.h"
 #include "client_action_handler.h"
+#include "game_logic.h"
 
-#define BASE_PORT   2201
-#define SEATS       6
+#define BASE_PORT 2201
+#define NUM_PORTS 6
+#define BUFFER_SIZE 1024
 
-void fill_info(const game_state_t *g,
-               player_id_t viewer,
-               info_packet_t *pkt);
-               
-static int active_ready_seats(const game_state_t *g)
-{
-    int r = 0;
-    for (int i = 0; i < MAX_PLAYERS; ++i)
-        if (g->player_status[i] == PLAYER_ACTIVE)
-            ++r;
-    return r;
-}
+typedef struct {
+    int socket;
+    struct sockaddr_in address;
+} player_t;
 
-int main(int argc, char **argv)
-{
-    int   seed = (argc == 2) ? atoi(argv[1]) : 0;
-    game_state_t G;
-    init_game_state(&G, /*stack*/100, seed);
+game_state_t game; //global variable to store our game state info (this is a huge hint for you)
 
-    /* ─────── listen sockets – one per seat ─────── */
-    int listen_fd[SEATS];
-    for (int seat = 0; seat < SEATS; ++seat)
-    {
-        listen_fd[seat] = socket(AF_INET, SOCK_STREAM, 0);
+int main(int argc, char **argv) {
+    int server_fds[NUM_PORTS], client_socket, player_count = 0;
+    int opt = 1;
+    struct sockaddr_in server_address;
+    player_t players[MAX_PLAYERS];
+    char buffer[BUFFER_SIZE] = {0};
+    socklen_t addrlen = sizeof(struct sockaddr_in);
 
-        int opt = 1;
-        setsockopt(listen_fd[seat], SOL_SOCKET, SO_REUSEADDR, &opt, sizeof opt);
+    int rand_seed = argc == 2 ? atoi(argv[1]) : 0;
+    init_game_state(&game, 100, rand_seed);
 
-        struct sockaddr_in addr = {
-            .sin_family      = AF_INET,
-            .sin_addr.s_addr = INADDR_ANY,
-            .sin_port        = htons(BASE_PORT + seat)
-        };
-        bind   (listen_fd[seat], (struct sockaddr*)&addr, sizeof addr);
-        listen (listen_fd[seat], 1);
-    }
-    printf("Server listening on ports %d-%d…\n",
-           BASE_PORT, BASE_PORT + SEATS - 1);
+    for(int i = 0; i < NUM_PORTS; ++i){
+        server_fds[i] = socket(AF_INET, SOCK_STREAM, 0);
+        setsockopt(server_fds[i], SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    /* ─────── wait for JOIN from all six seats ─────── */
-    int joined = 0;
-    while (joined < SEATS)
-    {
-        fd_set rs; FD_ZERO(&rs);
-        int maxfd = 0;
-        for (int s = 0; s < SEATS; ++s)
-        {
-            FD_SET(listen_fd[s], &rs);
-            if (listen_fd[s] > maxfd) maxfd = listen_fd[s];
+        memset(&players[i].address, 0, sizeof(players[i].address));
+        players[i].address.sin_family = AF_INET;
+        players[i].address.sin_addr.s_addr = INADDR_ANY;
+        players[i].address.sin_port = htons(BASE_PORT + i);
+
+        if(bind(server_fds[i], (struct sockaddr *)&players[i].address, sizeof(players[i].address)) < 0){
+            perror("bind");
+            exit(EXIT_FAILURE);
         }
-        select(maxfd + 1, &rs, NULL, NULL, NULL);
-
-        for (int seat = 0; seat < SEATS; ++seat)
-        {
-            if (!FD_ISSET(listen_fd[seat], &rs)) continue;
-
-            int csock = accept(listen_fd[seat], NULL, NULL);
-            client_packet_t jpkt;
-            recv(csock, &jpkt, sizeof jpkt, 0);
-
-            if (jpkt.packet_type != JOIN)
-            {
-                close(csock);
-                continue;
-            }
-            G.sockets[seat]       = csock;
-            G.player_status[seat] = PLAYER_FOLDED; /* waiting for READY */
-            ++joined;
-            printf("Seat %d joined.\n", seat);
+        if(listen(server_fds[i], 1) < 0){
+            perror("listen");
+            exit(EXIT_FAILURE);
         }
     }
-    puts("All players joined – starting hands.");
+    printf("[Server] Listening on ports %d-%d. Waiting for JOIN...\n", BASE_PORT, BASE_PORT + NUM_PORTS - 1);
 
-    /* ─────────────────────────  MAIN GAME LOOP  ───────────────────────── */
+    while(player_count < MAX_PLAYERS){
+        fd_set readset;
+        FD_ZERO(&readset);
+        for(int i = 0; i < NUM_PORTS; ++i){
+            FD_SET(server_fds[i], &readset);
+        }
+        select(server_fds[NUM_PORTS - 1] + 1, &readset, NULL, NULL, NULL);
 
-    while (1)
-    {
-        /* reset & wait for READY/LEAVE */
-        reset_game_state(&G);
-
-        int ready = 0;
-        while (ready < 2)                   /* need at least 2 to keep playing */
-        {
-            fd_set rs; FD_ZERO(&rs);
-            int maxfd = 0;
-            for (int s = 0; s < SEATS; ++s)
-            {
-                if (G.player_status[s] == PLAYER_LEFT) continue;
-                FD_SET(G.sockets[s], &rs);
-                if (G.sockets[s] > maxfd) maxfd = G.sockets[s];
-            }
-            select(maxfd + 1, &rs, NULL, NULL, NULL);
-
-            for (int s = 0; s < SEATS; ++s)
-            {
-                if (G.player_status[s] == PLAYER_LEFT) continue;
-                if (!FD_ISSET(G.sockets[s], &rs)) continue;
-
-                client_packet_t pkt;
-                if (recv(G.sockets[s], &pkt, sizeof pkt, 0) <= 0)
-                {   /* hard disconnect */
-                    close(G.sockets[s]);
-                    G.player_status[s] = PLAYER_LEFT;
+        for(int i = 0; i < NUM_PORTS; ++i){
+            if(FD_ISSET(server_fds[i], &readset)){
+                int client_sock = accept(server_fds[i], (struct sockaddr *)&players[i].address, &addrlen);
+                if(client_sock < 0){
+                    perror("accept");
                     continue;
                 }
 
-                if (pkt.packet_type == READY)
-                {
-                    G.player_status[s] = PLAYER_ACTIVE;
+                client_packet_t joinPkt;
+                recv(client_sock, &joinPkt, sizeof(joinPkt), 0);
+                if(joinPkt.packet_type != JOIN){
+                    close(client_sock);
+                    continue;
                 }
-                else if (pkt.packet_type == LEAVE)
-                {
-                    G.player_status[s] = PLAYER_LEFT;
-                    close(G.sockets[s]);
-                }
-            }
-            ready = active_ready_seats(&G);
 
-            /* halt if fewer than two seats still playing */
-            if (ready < 2)
-            {
-                server_packet_t hp = { .packet_type = HALT };
-                for (int s = 0; s < SEATS; ++s)
-                    if (G.player_status[s] != PLAYER_LEFT)
-                    {
-                        send(G.sockets[s], &hp, sizeof hp, 0);
-                        close(G.sockets[s]);
-                        G.player_status[s] = PLAYER_LEFT;
-                    }
-                puts("Not enough players – shutting down.");
-                goto shutdown;
+                game.sockets[i] = client_sock;
+                game.player_status[i] = PLAYER_ACTIVE;
+                printf(" [Server] Player %d JOINed on port %d\n", i, BASE_PORT + i);
+                ++player_count;
             }
         }
+    }
+    printf("[Server] All %d players joined. Entering main loop.\n", MAX_PLAYERS);
 
-        /* ───────  start the hand  ─────── */
-        server_deal(&G);
+    while (1) {
+        reset_game_state(&game);
 
-        /* send first INFO to everyone */
-        {
-            server_packet_t sp;
-            sp.packet_type = INFO;
-            for (int seat = 0; seat < SEATS; ++seat)
-            {
-                if (G.player_status[seat] == PLAYER_LEFT) continue;
-                fill_info(&G, seat, &sp.info);        /* helper from CAH */
-                send(G.sockets[seat], &sp, sizeof sp, 0);
-            }
-        }
-
-        /* ───────  betting/streets loop  ─────── */
-        for (;;)
-        {
-            int state = check_betting_end(&G);
-            if (state == 2)               /* only one player still active */
-                break;
-            if (state == 1)               /* street finished – deal next */
-            {
-                if (G.round_stage == ROUND_RIVER)
-                    break;                /* river done → showdown */
-                server_community(&G);
-                continue;                 /* broadcast handled inside */
-            }
-
-            /* wait for current player action */
-            player_id_t p = G.current_player;
-            client_packet_t cp;
-            if (recv(G.sockets[p], &cp, sizeof cp, 0) <= 0)
-            {   /* drop = auto-fold */
-                G.player_status[p] = PLAYER_FOLDED;
+        int readyCount = 0;
+        for(int i = 0; i < MAX_PLAYERS; ++i){
+            if(game.player_status[i] == PLAYER_LEFT){
                 continue;
             }
-            server_packet_t reply;
-            handle_client_action(&G, p, &cp, &reply);
-            send(G.sockets[p], &reply, sizeof reply, 0);
+
+            client_packet_t cPkt;
+            if(recv(game.sockets[i], &cPkt, sizeof(cPkt), 0) <= 0){
+                game.player_status[i] = PLAYER_LEFT;
+                close(game.sockets[i]);
+                printf("[Server] Player %d disconnected.\n", i);
+                continue;
+            }
+
+            if(cPkt.packet_type == LEAVE){
+                game.player_status[i] = PLAYER_LEFT;
+                close(game.sockets[i]);
+                printf("[Server] Player %d left the table.\n", i);
+                continue;
+            }
+
+            if(cPkt.packet_type == READY){
+                ++readyCount;
+                continue;
+            }
+            printf("[Server] Unexpected packet from player %d\n", i);
         }
 
-        /* ───────  SHOWDOWN / AWARD POT  ─────── */
-        int winner = find_winner(&G);
-        server_end(&G);
+        if(readyCount < 2){
+            server_packet_t halt = { .packet_type = HALT };
+            for(int i = 0; i < MAX_PLAYERS; ++i){
+                if(game.player_status[i] != PLAYER_LEFT){
+                    send(game.sockets[i], &halt, sizeof(halt), 0);
+                    close(game.sockets[i]);
+                }
+            }
+            break;
+        }
 
-        server_packet_t ep;
-        build_end_packet(&G, winner, &ep);
-        for (int s = 0; s < SEATS; ++s)
-            if (G.player_status[s] != PLAYER_LEFT)
-                send(G.sockets[s], &ep, sizeof ep, 0);
+        server_deal(&game);
+        for(int p = 0; p < MAX_PLAYERS; ++p){
+            if(game.player_status[p] != PLAYER_LEFT){
+                server_packet_t infoPkt;
+                build_info_packet(&game, p, &infoPkt);
+                send(game.sockets[p], &infoPkt, sizeof(infoPkt), 0);
+            }
+        }
+
+        while(1){
+            if(check_betting_end(&game)){
+                if(game.round_stage == ROUND_RIVER){
+                    break;
+                }
+                server_community(&game);
+                for(int p = 0; p < MAX_PLAYERS; ++p){
+                    if(game.player_status[p] != PLAYER_LEFT){
+                        server_packet_t infoPkt;
+                        build_info_packet(&game, p, &infoPkt);
+                        send(game.sockets[p], &infoPkt, sizeof(infoPkt), 0);
+                    }
+                }
+                continue;
+            }
+
+            player_id_t pid = game.current_player;
+            client_packet_t cPkt;
+            int r = recv(game.sockets[pid], &cPkt, sizeof(cPkt), 0);
+            if(r <= 0){
+                game.player_status[pid] = PLAYER_FOLDED;
+                int nxt = (pid + 1) % MAX_PLAYERS;
+                while(game.player_status[nxt] != PLAYER_ACTIVE){
+                    nxt = (nxt + 1) % MAX_PLAYERS;
+                }
+                game.current_player = nxt;
+                continue;
+            }
+
+            server_packet_t reply;
+            if(handle_client_action(&game, pid, &cPkt, &reply) == 0){
+                send(game.sockets[pid], &reply, sizeof(reply), 0);
+            }
+            else{
+                reply.packet_type = NACK;
+                send(game.sockets[pid], &reply, sizeof(reply), 0);
+            }
+        }
+
+        int winner = find_winner(&game);
+        server_end(&game);
+
+        for(int p = 0; p < MAX_PLAYERS; ++p){
+            if(game.player_status[p] != PLAYER_LEFT){
+                server_packet_t endPkt;
+                build_end_packet(&game, winner, &endPkt);
+                send(game.sockets[p], &endPkt, sizeof(endPkt), 0);
+            }
+        }
     }
 
-shutdown:
-    for (int s = 0; s < SEATS; ++s)
-    {
-        close(listen_fd[s]);
-        if (G.player_status[s] != PLAYER_LEFT)
-            close(G.sockets[s]);
+    printf("[Server] Shutting down.\n");
+
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        close(server_fds[i]);
+        if (game.player_status[i] != PLAYER_LEFT) {
+            close(game.sockets[i]);
+        }
     }
+
     return 0;
 }
