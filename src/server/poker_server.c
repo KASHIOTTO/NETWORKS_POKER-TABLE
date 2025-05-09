@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/select.h>
+#include <sys/time.h>
 
 #include "poker_client.h"
 #include "client_action_handler.h"
@@ -28,39 +30,165 @@ int main(int argc, char **argv) {
     char buffer[BUFFER_SIZE] = {0};
     socklen_t addrlen = sizeof(struct sockaddr_in);
 
-    //Setup the server infrastructre and accept the 6 players on ports 2201, 2202, 2203, 2204, 2205, 2206
-
     int rand_seed = argc == 2 ? atoi(argv[1]) : 0;
     init_game_state(&game, 100, rand_seed);
 
-    //Join state?
+    for(int i = 0; i < NUM_PORTS; ++i){
+        server_fds[i] = socket(AF_INET, SOCK_STREAM, 0);
+        setsockopt(server_fds[i], SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+        memset(&players[i].address, 0, sizeof(players[i].address));
+        players[i].address.sin_family = AF_INET;
+        players[i].address.sin_addr.s_addr = INADDR_ANY;
+        players[i].address.sin_port = htons(BASE_PORT + i);
+
+        if(bind(server_fds[i], (struct sockaddr *)&players[i].address, sizeof(players[i].address)) < 0){
+            perror("bind");
+            exit(EXIT_FAILURE);
+        }
+        if(listen(server_fds[i], 1) < 0){
+            perror("listen");
+            exit(EXIT_FAILURE);
+        }
+    }
+    printf("[Server] Listening on ports %d-%d. Waiting for JOIN...\n", BASE_PORT, BASE_PORT + NUM_PORTS - 1);
+
+    while(player_count < MAX_PLAYERS){
+        fd_set readset;
+        FD_ZERO(&readset);
+        for(int i = 0; i < NUM_PORTS; ++i){
+            FD_SET(server_fds[i], &readset);
+        }
+        select(server_fds[NUM_PORTS - 1] + 1, &readset, NULL, NULL, NULL);
+
+        for(int i = 0; i < NUM_PORTS; ++i){
+            if(FD_ISSET(server_fds[i], &readset)){
+                int client_sock = accept(server_fds[i], (struct sockaddr *)&players[i].address, &addrlen);
+                if(client_sock < 0){
+                    perror("accept");
+                    continue;
+                }
+
+                client_packet_t joinPkt;
+                recv(client_sock, &joinPkt, sizeof(joinPkt), 0);
+                if(joinPkt.packet_type != JOIN){
+                    close(client_sock);
+                    continue;
+                }
+
+                game.sockets[i] = client_sock;
+                game.player_status[i] = PLAYER_ACTIVE;
+                printf(" [Server] Player %d JOINed on port %d\n", i, BASE_PORT + i);
+                ++player_count;
+            }
+        }
+    }
+    printf("[Server] All %d players joined. Entering main loop.\n", MAX_PLAYERS);
 
     while (1) {
-       
-        // READY
-        
-        // DEAL TO PLAYERS
+        reset_game_state(&game);
 
-        // PREFLOP BETTING
+        int readyCount = 0;
+        for(int i = 0; i < MAX_PLAYERS; ++i){
+            if(game.player_status[i] == PLAYER_LEFT){
+                continue;
+            }
 
-        // PLACE FLOP CARDS
+            client_packet_t cPkt;
+            if(recv(game.sockets[i], &cPkt, sizeof(cPkt), 0) <= 0){
+                game.player_status[i] = PLAYER_LEFT;
+                close(game.sockets[i]);
+                printf("[Server] Player %d disconnected.\n", i);
+                continue;
+            }
 
-        // FLOP BETTING
+            if(cPkt.packet_type == LEAVE){
+                game.player_status[i] = PLAYER_LEFT;
+                close(game.sockets[i]);
+                printf("[Server] Player %d left the table.\n", i);
+                continue;
+            }
 
-        // PLACE TURN CARDS
+            if(cPkt.packet_type == READY){
+                ++readyCount;
+                continue;
+            }
+            printf("[Server] Unexpected packet from player %d\n", i);
+        }
 
-        // TURN BETTING
+        if(readyCount < 2){
+            server_packet_t halt = { .packet_type = HALT };
+            for(int i = 0; i < MAX_PLAYERS; ++i){
+                if(game.player_status[i] != PLAYER_LEFT){
+                    send(game.sockets[i], &halt, sizeof(halt), 0);
+                    close(game.sockets[i]);
+                }
+            }
+            break;
+        }
 
-        // PLACE RIVER CARDS
+        server_deal(&game);
+        for(int p = 0; p < MAX_PLAYERS; ++p){
+            if(game.player_status[p] != PLAYER_LEFT){
+                server_packet_t infoPkt;
+                build_info_packet(&game, p, &infoPkt);
+                send(game.sockets[p], &infoPkt, sizeof(infoPkt), 0);
+            }
+        }
 
-        // RIVER BETTING
-        
-        // ROUND_SHOWDOWN
+        while(1){
+            if(check_betting_end(&game)){
+                if(game.round_stage == ROUND_RIVER){
+                    break;
+                }
+                server_community(&game);
+                for(int p = 0; p < MAX_PLAYERS; ++p){
+                    if(game.player_status[p] != PLAYER_LEFT){
+                        server_packet_t infoPkt;
+                        build_info_packet(&game, p, &infoPkt);
+                        send(game.sockets[p], &infoPkt, sizeof(infoPkt), 0);
+                    }
+                }
+                continue;
+            }
+
+            player_id_t pid = game.current_player;
+            client_packet_t cPkt;
+            int r = recv(game.sockets[pid], &cPkt, sizeof(cPkt), 0);
+            if(r <= 0){
+                game.player_status[pid] = PLAYER_FOLDED;
+                int nxt = (pid + 1) % MAX_PLAYERS;
+                while(game.player_status[nxt] != PLAYER_ACTIVE){
+                    nxt = (nxt + 1) % MAX_PLAYERS;
+                }
+                game.current_player = nxt;
+                continue;
+            }
+
+            server_packet_t reply;
+            if(handle_client_action(&game, pid, &cPkt, &reply) == 0){
+                send(game.sockets[pid], &reply, sizeof(reply), 0);
+            }
+            else{
+                reply.packet_type = NACK;
+                send(game.sockets[pid], &reply, sizeof(reply), 0);
+            }
+        }
+
+        int winner = find_winner(&game);
+        server_end(&game);
+
+        for(int p = 0; p < MAX_PLAYERS; ++p){
+            if(game.player_status[p] != PLAYER_LEFT){
+                server_packet_t endPkt;
+                build_end_packet(&game, winner, &endPkt);
+                send(game.sockets[p], &endPkt, sizeof(endPkt), 0);
+            }
+        }
     }
 
     printf("[Server] Shutting down.\n");
 
-    // Close all fds (you're welcome)
     for (int i = 0; i < MAX_PLAYERS; i++) {
         close(server_fds[i]);
         if (game.player_status[i] != PLAYER_LEFT) {
