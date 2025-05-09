@@ -17,7 +17,7 @@ static inline uint64_t bit(int rank){
 static uint64_t value_of_hand(const card_t cards[7]){
     int rankOccurrence[13] = {0};
     uint16_t suitRanks[4] = {0};
-    for(int i = 0; i < 7; ++i){
+    for(int i = 0; i < 7; i++){
         int r = RANK(cards[i]);
         int s = SUITE(cards[i]);
         rankOccurrence[r]++;
@@ -25,7 +25,7 @@ static uint64_t value_of_hand(const card_t cards[7]){
     }
 
     int flushSuit = -1;
-    for(int s = 0; s < 4; ++s){
+    for(int s = 0; s < 4; s++){
         if(__builtin_popcount(suitRanks[s]) >= 5){
             flushSuit = s;
             break;
@@ -34,7 +34,7 @@ static uint64_t value_of_hand(const card_t cards[7]){
 
     int straightHi = -1, sfHi = -1;
     uint16_t ranksMask = 0;
-    for(int r = 0; r < 13; ++r){
+    for(int r = 0; r < 13; r++){
         if(rankOccurrence[r]){
             ranksMask |= 1 << r;
         }
@@ -131,7 +131,7 @@ static uint64_t value_of_hand(const card_t cards[7]){
     }
     if(trips[0] != -1){
         int fifthHi1 = -1, fifthHi2 = -1;
-        for(int r = 12; r >= 0; ++r){
+        for(int r = 12; r >= 0; r++){
             if(r != trips[0] && rankOccurrence[r]){
                 if(fifthHi1 == -1){
                     fifthHi1 = r;
@@ -193,7 +193,7 @@ void print_game_state( game_state_t *game){
     (void) game;
 }
 
-void init_deck(card_t deck[DECK_SIZE], int seed){
+void init_deck(card_t deck[DECK_SIZE], int seed){//DONT TOUCH
     srand(seed);
     int i = 0;
     for(int r = 0; r<13; r++){
@@ -203,7 +203,7 @@ void init_deck(card_t deck[DECK_SIZE], int seed){
     }
 }
 
-void shuffle_deck(card_t deck[DECK_SIZE]){
+void shuffle_deck(card_t deck[DECK_SIZE]){//DONT TOUCH
     for(int i = 0; i<DECK_SIZE; i++){
         int j = rand() % DECK_SIZE;
         card_t temp = deck[i];
@@ -226,6 +226,9 @@ void init_game_state(game_state_t *game, int starting_stack, int random_seed){
 
 void reset_game_state(game_state_t *game) {
     shuffle_deck(game->deck);
+    //Call this function between hands.
+    //You should add your own code, I just wanted to make sure the deck got shuffled.
+
     game->next_card = 0;
     memset(game->community_cards, NOCARD, sizeof(game->community_cards));
     memset(game->player_hands, NOCARD, sizeof(game->player_hands));
@@ -241,8 +244,22 @@ void reset_game_state(game_state_t *game) {
         game->dealer_player = next_dealer;
     }
 
+    for(int i = 0; i < MAX_PLAYERS; i++){
+        if(game->player_status[i] != PLAYER_LEFT){
+            game->player_status[i] = PLAYER_ACTIVE;
+        }
+    }
+
     game->current_player = -1;
     game->round_stage = ROUND_PREFLOP;
+
+    for(int p = 0; p < MAX_PLAYERS; p++){
+        if(game->player_status[p] != PLAYER_LEFT){
+            server_packet_t infoPkt;
+            build_info_packet(game, p, &infoPkt);
+            send(game->sockets[p], &infoPkt, sizeof(infoPkt), 0);
+        }
+    }
 }
 
 void server_join(game_state_t *game) {
@@ -266,19 +283,13 @@ void server_deal(game_state_t *game) {
     }
     game->current_player = first;
 
-    for(int i = 0; i < MAX_PLAYERS; ++i){
-        if(game->player_status[i] == PLAYER_ACTIVE){
-            game->current_bets[i] = -1;
-        }
-    }
-    for(int i = game->dealer_player, dealt = 0; dealt < MAX_PLAYERS; i = (i + 1) % MAX_PLAYERS, ++dealt){
+    for(int i = game->dealer_player, dealt = 0; dealt < MAX_PLAYERS; i = (i + 1) % MAX_PLAYERS, dealt++){
         if (game->player_status[i] != PLAYER_ACTIVE) {
             continue;
         }
         game->player_hands[i][0] = game->deck[game->next_card++];
         game->player_hands[i][1] = game->deck[game->next_card++];
     }
-    game->highest_bet = 0;
 }
 
 int server_bet(game_state_t *game) {
@@ -287,26 +298,24 @@ int server_bet(game_state_t *game) {
 }
 
 int check_betting_end(game_state_t *game){
-    int activeCount = 0;
-    int match = 1;
-    for(int i = 0; i < MAX_PLAYERS; ++i){
-        if(game->player_status[i] != PLAYER_ACTIVE && game->player_status[i] != PLAYER_ALLIN){
-            continue;
-        }
-        ++activeCount;
-        if(game->player_status[i] == PLAYER_ACTIVE && game->current_bets[i] == -1){
-            match = 0;
-        }
-        if(game->player_status[i] == PLAYER_ACTIVE && game->current_bets[i] != game->highest_bet){
-            match = 0;
+    int active = 0, targetVal = -1;
+    for(int i = 0; i < MAX_PLAYERS; i++){
+        if(game->player_status[i] == PLAYER_ACTIVE || game->player_status[i] == PLAYER_ALLIN){
+            ++active;
+            if(targetVal == -1){
+                targetVal = game->current_bets[i];
+            }
+            else if(game->current_bets[i] != targetVal && game->player_status[i] == PLAYER_ACTIVE){
+                return 0;
+            }
         }
     }
-    return match;
+    return active <= 1 ? 1 : (game->highest_bet == 0 ? 0 : (targetVal == game->highest_bet));
 }
 
 void server_community(game_state_t *game) {
     if(game->round_stage == ROUND_PREFLOP){
-        for(int i = 0; i < 3; ++i){
+        for(int i = 0; i < 3; i++){
             game->community_cards[i] = game->deck[game->next_card++];
         }
         game->round_stage = ROUND_FLOP;
@@ -320,7 +329,7 @@ void server_community(game_state_t *game) {
         game->round_stage = ROUND_RIVER;
     }
 
-    for(int i = 0; i < MAX_PLAYERS; ++i){
+    for(int i = 0; i < MAX_PLAYERS; i++){
         game->current_bets[i] = (game->player_status[i] == PLAYER_ACTIVE) ? -1 : 0;
     }
     game->highest_bet = 0;
@@ -353,7 +362,7 @@ int evaluate_hand(game_state_t *game, player_id_t pid) {
 int find_winner(game_state_t *game) {
     uint64_t bestHand = 0;
     int bestSeat = -1;
-    for(int i = 0; i < MAX_PLAYERS; ++i){
+    for(int i = 0; i < MAX_PLAYERS; i++){
         if(game->player_status[i] == PLAYER_FOLDED || game->player_status[i] == PLAYER_LEFT){
             continue;
         }
